@@ -581,6 +581,19 @@ type ParserConfig struct {
 	// UserCmdParsing controls CSVCMsg_UserCommands parsing. It defaults to
 	// UserCmdParsingButtonsOnly, including when ParserConfig is created as a zero value.
 	UserCmdParsing UserCmdParsingMode
+
+	// UserCmdSeedWithoutBaseline continues a player's command chain from an all-zero
+	// command when a delta arrives before any full payload, instead of dropping it.
+	//
+	// CS2 demos recorded since 2026-09 carry a full payload for well under 0.1% of user
+	// commands, so the default (fail closed until a baseline shows up) silently loses the
+	// entire first half of a match for most players. Deltas only carry fields that changed,
+	// so every value the reconstruction holds is the recorded one; only fields never written
+	// since the seed stay at their zero value. Those commands are dispatched with
+	// events.UserCmdSourceProvisional so callers can tell them apart.
+	//
+	// Has no effect unless UserCmdParsing is UserCmdParsingFull. Defaults to false.
+	UserCmdSeedWithoutBaseline bool
 }
 
 // DefaultParserConfig is the default Parser configuration used by NewParser().

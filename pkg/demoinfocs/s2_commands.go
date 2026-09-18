@@ -474,6 +474,7 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
 		}
 
 		var next *msg.CSGOUserCmdPB
+		source := events.UserCmdSourceExact
 		if data := cmd.GetData(); len(data) > 0 {
 			// Full payloads replace the current command snapshot.
 			next = &msg.CSGOUserCmdPB{}
@@ -490,35 +491,46 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
 			// number, then validates the command-number ring slot. A modulo
 			// collision is not a usable baseline.
 			if !state.hasCurrentCommand {
-				p.msgDispatcher.Dispatch(events.ParserWarn{
-					Message: fmt.Sprintf("user command %d has no baseline for player slot %d", cmd.GetCmdNumber(), slot),
-					Type:    events.WarnTypeUserCommandBaselineMissing,
-				})
+				if !p.config.UserCmdSeedWithoutBaseline {
+					p.msgDispatcher.Dispatch(events.ParserWarn{
+						Message: fmt.Sprintf("user command %d has no baseline for player slot %d", cmd.GetCmdNumber(), slot),
+						Type:    events.WarnTypeUserCommandBaselineMissing,
+					})
 
-				continue
+					continue
+				}
+
+				// No baseline yet: start from an empty command. The encoder only
+				// sends fields that changed, so everything a delta writes is the
+				// recorded value, while fields never written stay at zero.
+				next = &msg.CSGOUserCmdPB{}
+				source = events.UserCmdSourceProvisional
+			} else {
+				requestedBaseline := state.currentCommandNumber
+				if cmd.GetCmdNumber() < requestedBaseline {
+					p.msgDispatcher.Dispatch(events.ParserWarn{
+						Message: fmt.Sprintf("user command %d precedes its current baseline %d for player slot %d", cmd.GetCmdNumber(), requestedBaseline, slot),
+						Type:    events.WarnTypeUserCommandBaselineMismatch,
+					})
+
+					continue
+				}
+
+				baseline, found := state.ring.get(requestedBaseline)
+				if !found {
+					p.msgDispatcher.Dispatch(events.ParserWarn{
+						Message: fmt.Sprintf("user command %d has a baseline ring mismatch for player slot %d (requested %d)", cmd.GetCmdNumber(), slot, requestedBaseline),
+						Type:    events.WarnTypeUserCommandBaselineMismatch,
+					})
+
+					continue
+				}
+
+				next = proto.Clone(baseline).(*msg.CSGOUserCmdPB)
+				if state.provisional {
+					source = events.UserCmdSourceProvisional
+				}
 			}
-
-			requestedBaseline := state.currentCommandNumber
-			if cmd.GetCmdNumber() < requestedBaseline {
-				p.msgDispatcher.Dispatch(events.ParserWarn{
-					Message: fmt.Sprintf("user command %d precedes its current baseline %d for player slot %d", cmd.GetCmdNumber(), requestedBaseline, slot),
-					Type:    events.WarnTypeUserCommandBaselineMismatch,
-				})
-
-				continue
-			}
-
-			baseline, found := state.ring.get(requestedBaseline)
-			if !found {
-				p.msgDispatcher.Dispatch(events.ParserWarn{
-					Message: fmt.Sprintf("user command %d has a baseline ring mismatch for player slot %d (requested %d)", cmd.GetCmdNumber(), slot, requestedBaseline),
-					Type:    events.WarnTypeUserCommandBaselineMismatch,
-				})
-
-				continue
-			}
-
-			next = proto.Clone(baseline).(*msg.CSGOUserCmdPB)
 		} else {
 			continue
 		}
@@ -540,6 +552,7 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
 		state.ring.insert(commandNumber, next)
 		state.currentCommandNumber = commandNumber
 		state.hasCurrentCommand = true
+		state.provisional = source == events.UserCmdSourceProvisional
 
 		// Player slots map to controller entities: slot N is entity N+1
 		// (getOrCreatePlayerFromControllerEntity relies on the same convention).
@@ -551,6 +564,7 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
 			ServerTickExecuted: cmd.GetServerTickExecuted(),
 			ClientTick:         cmd.GetClientTick(),
 			Command:            next,
+			Source:             source,
 		})
 
 		if player == nil {

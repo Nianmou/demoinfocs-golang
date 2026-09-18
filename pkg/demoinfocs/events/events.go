@@ -740,11 +740,29 @@ type PlayerButtonsStateUpdate struct {
 	ButtonsState uint64
 }
 
+// UserCmdSource tells how trustworthy the fields of a reconstructed user command are.
+type UserCmdSource uint8
+
+const (
+	// UserCmdSourceExact means the command's chain is rooted in a full payload, so every
+	// field holds the value the demo recorded.
+	UserCmdSourceExact UserCmdSource = iota
+	// UserCmdSourceProvisional means the chain started from an all-zero command because no
+	// full payload arrived for this player slot yet (see ParserConfig.UserCmdSeedWithoutBaseline).
+	// Fields a delta actually wrote are still exact - the encoder only sends what changed - but
+	// fields never written since the seed keep their zero value, which means "unknown" rather
+	// than "the player sent 0".
+	UserCmdSourceProvisional
+)
+
 // UserCmd signals that a complete CS2 user command was reconstructed from a
 // CMsgServerUserCmd full payload or delta_data. Command contains the merged
 // snapshot, including buttons, mouse movement, weapon selection, view angles,
 // movement, subtick moves, and input history. Player may be nil when the demo
 // does not yet have a player object for the command's slot.
+//
+// Source reports whether the chain is rooted in a real full payload or in an
+// all-zero seed, so callers can tell an untouched field from a genuine zero.
 type UserCmd struct {
 	Player             *common.Player
 	PlayerSlot         int32
@@ -752,6 +770,7 @@ type UserCmd struct {
 	ServerTickExecuted int32
 	ClientTick         int32
 	Command            *msg.CSGOUserCmdPB
+	Source             UserCmdSource
 }
 
 // ConVarsUpdated signals that ConVars/CVars have been updated.

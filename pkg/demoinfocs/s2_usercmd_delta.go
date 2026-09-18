@@ -70,6 +70,7 @@ type userCmdPlayerState struct {
 	ring                 userCmdRing
 	currentCommandNumber int32
 	hasCurrentCommand    bool
+	provisional          bool
 }
 
 // applyUserCmdDelta reconstructs a full user-command state by applying a delta
@@ -209,8 +210,16 @@ func mergeUserCmdRepeated(parent protoreflect.Message, fd protoreflect.FieldDesc
 				return errors.Wrap(protowire.ParseError(valueLen), "failed to read repeated delta message")
 			}
 
-			if index >= list.Len() {
-				return errors.Errorf("repeated delta index %d is out of bounds for length %d", index, list.Len())
+			if index > userCmdRepeatedLimit {
+				return errors.Errorf("repeated delta index %d exceeds limit %d", index, userCmdRepeatedLimit)
+			}
+
+			// The encoder only re-emits the grow operation when the element count
+			// changes, so an index can legitimately point past the end of a list
+			// that was never grown yet. Extend it with empty elements, exactly
+			// like the reset marker above does.
+			for list.Len() <= index {
+				list.Append(list.NewElement())
 			}
 
 			if err := mergeUserCmdDelta(list.Get(index).Message(), value); err != nil {
