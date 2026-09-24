@@ -1,6 +1,8 @@
 package demoinfocs
 
 import (
+	"strconv"
+
 	msg "github.com/markus-wa/demoinfocs-golang/v6/pkg/demoinfocs/msg"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -78,6 +80,76 @@ type userCmdPlayerState struct {
 // callers that need rollback should pass a clone.
 func applyUserCmdDelta(baseline *msg.CSGOUserCmdPB, deltaData []byte) error {
 	return mergeUserCmdDelta(baseline.ProtoReflect(), deltaData)
+}
+
+// userCmdRecordFields 只走一遍这条记录的原始字节，报「这一条自己写了哪些字段」，
+// 不做任何合并、也不看基线。用来分清某个值到底是本条记录写的、还是从基线继承来的——
+// 合并后的消息对两者看起来一模一样（字段永远非 nil）。
+//
+// 名字按嵌套路径给（"base.viewangles.x"）；描述符里认不出的字段号记成 "#<号>"，
+// 免得「没解析出来」被误读成「没写」；delta 的 wire-type-7 复位标记后缀 "!"。
+func userCmdRecordFields(data []byte) []string {
+	out := make([]string, 0, 16)
+	scanUserCmdFields((&msg.CSGOUserCmdPB{}).ProtoReflect().Descriptor(), data, "", &out)
+
+	return out
+}
+
+func scanUserCmdFields(desc protoreflect.MessageDescriptor, data []byte, prefix string, out *[]string) {
+	fields := desc.Fields()
+	for len(data) > 0 {
+		num, typ, tagLen := protowire.ConsumeTag(data)
+		if tagLen < 0 {
+			return
+		}
+
+		data = data[tagLen:]
+
+		fd := fields.ByNumber(num)
+		if fd == nil {
+			*out = append(*out, prefix+"#"+strconv.Itoa(int(num)))
+		}
+
+		if typ == wireTypeReset {
+			if fd != nil {
+				*out = append(*out, prefix+string(fd.Name())+"!")
+			}
+
+			continue
+		}
+
+		if typ == protowire.BytesType {
+			value, valueLen := protowire.ConsumeBytes(data)
+			if valueLen < 0 {
+				return
+			}
+
+			data = data[valueLen:]
+
+			if fd == nil {
+				continue
+			}
+
+			*out = append(*out, prefix+string(fd.Name()))
+			// 列表字段在 delta 里是「带下标的操作」而不是子消息本身，钻进去只会读出错位的东西。
+			if !fd.IsList() && (fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind) {
+				scanUserCmdFields(fd.Message(), value, prefix+string(fd.Name())+".", out)
+			}
+
+			continue
+		}
+
+		valueLen := protowire.ConsumeFieldValue(num, typ, data)
+		if valueLen < 0 {
+			return
+		}
+
+		data = data[valueLen:]
+
+		if fd != nil {
+			*out = append(*out, prefix+string(fd.Name()))
+		}
+	}
 }
 
 // mergeUserCmdDelta handles the two non-standard constructs in

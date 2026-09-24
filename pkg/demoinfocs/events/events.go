@@ -782,6 +782,10 @@ type UserCmd struct {
 	ClientTick         int32
 	Command            *msg.CSGOUserCmdPB
 	Source             UserCmdSource
+	// RecordFields lists the fields this record itself wrote, dotted by nested path
+	// ("base.view_angles.x"), with a trailing "!" for a delta reset. Only populated
+	// when ParserConfig.UserCmdRecordFieldNames is set; nil otherwise.
+	RecordFields []string
 }
 
 // ConVarsUpdated signals that ConVars/CVars have been updated.

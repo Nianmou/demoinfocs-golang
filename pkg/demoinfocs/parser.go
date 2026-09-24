@@ -594,6 +594,11 @@ type ParserConfig struct {
 	//
 	// Has no effect unless UserCmdParsing is UserCmdParsingFull. Defaults to false.
 	UserCmdSeedWithoutBaseline bool
+	// UserCmdRecordFieldNames additionally walks each command record's raw bytes and
+	// reports, on UserCmd.RecordFields, which fields that record itself wrote
+	// (e.g. "base.view_angles.x"; a trailing "!" marks a delta reset of that field).
+	// Off by default: merged commands cannot tell a written value from an inherited one.
+	UserCmdRecordFieldNames bool
 }
 
 // DefaultParserConfig is the default Parser configuration used by NewParser().
