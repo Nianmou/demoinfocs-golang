@@ -604,11 +604,13 @@ func (geh gameEventHandler) flashBangDetonate(data map[string]*msg.CMsgSource1Le
 
 	geh.gameState().lastFlash.player = nadeEvent.Thrower
 
-	if !geh.parser.disableMimicSource1GameEvents {
-		geh.dispatch(events.FlashExplode{
-			GrenadeEvent: nadeEvent,
-		})
-	}
+	// 这条就是 demo 原始事件流里的 flashbang_detonate（位置/实体号都来自事件键），
+	// 不是「模仿层合成」的那条：合成那条在 datatables.go 的 OnDestroy 里，且只在
+	// 模仿层开着时派发。原来这里跟着同一道门走，于是关掉模仿层之后闪爆点两头都没有了
+	// （HE/诱饵/烟的原始处理器都不带这道门，所以只有闪弹掉队）。
+	geh.dispatch(events.FlashExplode{
+		GrenadeEvent: nadeEvent,
+	})
 }
 
 func (geh gameEventHandler) heGrenadeDetonate(data map[string]*msg.CMsgSource1LegacyGameEventKeyT) {
