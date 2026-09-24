@@ -37,17 +37,19 @@ func (p *parser) bindBomb() {
 
 		bombEntity.Property("m_hOwnerEntity").OnUpdate(func(val st.PropertyValue) {
 			carrier := p.gameState.Participants().FindByPawnHandle(val.Handle())
-			if !p.disableMimicSource1GameEvents {
-				if carrier != nil {
-					p.eventDispatcher.Dispatch(events.BombPickup{
-						Player: carrier,
-					})
-				} else if bomb.Carrier != nil {
-					p.eventDispatcher.Dispatch(events.BombDropped{
-						Player:   bomb.Carrier,
-						EntityID: bomb.Carrier.EntityID,
-					})
-				}
+			// 回合开头把 C4 交到 T 手上那次，CS2 demo 里**只有** `m_hOwnerEntity` 的状态变化，
+			// 没有 Source1-legacy 的 bomb_pickup 事件 ⇒ 跟着模仿层开关一起关掉就会整条丢掉
+			// （DemoTracer 是从状态推导的，它那份文件里就有这条）。所以这里不再受
+			// disableMimicSource1GameEvents 连坐；两条来源都发时由消费侧按上游的 dedup 键折叠。
+			if carrier != nil {
+				p.eventDispatcher.Dispatch(events.BombPickup{
+					Player: carrier,
+				})
+			} else if bomb.Carrier != nil {
+				p.eventDispatcher.Dispatch(events.BombDropped{
+					Player:   bomb.Carrier,
+					EntityID: bomb.Carrier.EntityID,
+				})
 			}
 
 			bomb.Carrier = carrier
