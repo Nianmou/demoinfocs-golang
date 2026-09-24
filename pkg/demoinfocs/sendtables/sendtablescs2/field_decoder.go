@@ -165,6 +165,15 @@ var fieldTypeDecoders = map[string]fieldDecoder{
 		DemoSimpleEncoders_t { m_Name = "BeamClipStyle_t"						m_VarType = "NET_DATA_TYPE_UINT64" },	// uint32  ?
 		DemoSimpleEncoders_t { m_Name = "EntityDisolveType_t"					m_VarType = "NET_DATA_TYPE_INT64" },	// int32  ?
 	*/
+	/*
+		DemoSimpleEncoders_t { m_Name = "GameTick_t"		m_VarType = "NET_DATA_TYPE_INT64" },	// int32, zigzag
+	*/
+	// CS2 把 GameTick_t（如 m_nNextPrimaryAttackTick / m_nLastJumpTick）按**有符号 zigzag varint**
+	// 写进 demo；缺这一条时它落到 defaultDecoder（无符号读法），读回来是真实 tick 的 2 倍，
+	// 而「从未」哨兵 -1 会变成 1。上游 demoparser 的同名表（maps.rs 的 "GameTick_t" => SignedDecoder）
+	// 是对的，实测对同一份 demo 逐字段核过。
+	"GameTick_t":              signedDecoder,
+
 	"MoveCollide_t":           unsignedDecoder,
 	"MoveType_t":              unsignedDecoder,
 	"RenderMode_t":            unsignedDecoder,
