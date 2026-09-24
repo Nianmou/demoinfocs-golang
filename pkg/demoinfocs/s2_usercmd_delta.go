@@ -152,6 +152,99 @@ func scanUserCmdFields(desc protoreflect.MessageDescriptor, data []byte, prefix 
 	}
 }
 
+// userCmdWritten 是「本条记录自己写了哪些字段」的位掩码（不分配内存的轻量版
+// userCmdRecordFields，每条记录都算）。合并后的消息分不出写的与继承的，
+// 而上游那些 `usercmd_*` 列只在**本条记录带了该字段**时才落值，消费侧需要这个信息。
+const (
+	UserCmdWroteClientTick = uint32(1 << iota)
+	UserCmdWroteViewAngles
+	UserCmdWroteButtonStates
+	UserCmdWroteSubtickMoves
+)
+
+// userCmdWritten 走一遍记录的原始标签流，只记位、不分配。嵌套只看一层（base）。
+func userCmdWritten(data []byte) uint32 {
+	desc := (&msg.CSGOUserCmdPB{}).ProtoReflect().Descriptor()
+	// CSGOUserCmdPB.base（CBaseUserCmdPB）的字段号。
+	baseFD := desc.Fields().ByNumber(1)
+	var mask uint32
+	for len(data) > 0 {
+		num, typ, tagLen := protowire.ConsumeTag(data)
+		if tagLen < 0 {
+			return mask
+		}
+
+		data = data[tagLen:]
+
+		if typ == wireTypeReset {
+			continue
+		}
+
+		valueLen := -1
+		var value []byte
+		if typ == protowire.BytesType {
+			value, valueLen = protowire.ConsumeBytes(data)
+		} else {
+			valueLen = protowire.ConsumeFieldValue(num, typ, data)
+		}
+
+		if valueLen < 0 {
+			return mask
+		}
+
+		data = data[valueLen:]
+
+		if baseFD != nil && num == baseFD.Number() {
+			mask |= baseWritten(value)
+		}
+	}
+
+	return mask
+}
+
+// baseWritten 只看 CBaseUserCmdPB 里我们在意的那几个字段号。
+func baseWritten(value []byte) uint32 {
+	var mask uint32
+	for len(value) > 0 {
+		num, typ, tagLen := protowire.ConsumeTag(value)
+		if tagLen < 0 {
+			return mask
+		}
+
+		value = value[tagLen:]
+
+		if typ == wireTypeReset {
+			continue
+		}
+
+		length := -1
+		if typ == protowire.BytesType {
+			_, length = protowire.ConsumeBytes(value)
+		} else {
+			length = protowire.ConsumeFieldValue(num, typ, value)
+		}
+
+		if length < 0 {
+			return mask
+		}
+
+		value = value[length:]
+
+		switch num {
+		case 2:
+			mask |= UserCmdWroteClientTick
+		case 3:
+			mask |= UserCmdWroteButtonStates
+		case 4:
+			mask |= UserCmdWroteViewAngles
+		case 18:
+			mask |= UserCmdWroteSubtickMoves
+		}
+	}
+
+	return mask
+}
+
 // mergeUserCmdDelta handles the two non-standard constructs in
 // codegen_delta_encoder output: wire-type-7 reset markers and indexed repeated
 // operations. Ordinary protobuf fields are passed through to the protobuf

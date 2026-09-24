@@ -557,6 +557,11 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
 		// Player slots map to controller entities: slot N is entity N+1
 		// (getOrCreatePlayerFromControllerEntity relies on the same convention).
 		player := p.gameState.playersByEntityID[int(slot)+1]
+		written := userCmdWritten(cmd.GetData())
+		if len(cmd.GetData()) == 0 {
+			written = userCmdWritten(cmd.GetDeltaData())
+		}
+
 		var recordFields []string
 		if p.config.UserCmdRecordFieldNames {
 			// 合并后的消息分不出「本条写的」和「基线继承的」，所以直接再走一遍原始字节。
@@ -576,6 +581,7 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
 			Command:            next,
 			Source:             source,
 			RecordFields:       recordFields,
+			WrittenFields:      written,
 		})
 
 		if player == nil {

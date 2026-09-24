@@ -782,6 +782,11 @@ type UserCmd struct {
 	ClientTick         int32
 	Command            *msg.CSGOUserCmdPB
 	Source             UserCmdSource
+	// WrittenFields is an allocation-free mask of which fields this record itself
+	// wrote (demoinfocs.UserCmdWrote* ). The merged command cannot tell a written
+	// value apart from an inherited one, and DemoTracer only commits a usercmd column
+	// when the record carried that field, so consumers need this.
+	WrittenFields uint32
 	// RecordFields lists the fields this record itself wrote, dotted by nested path
 	// ("base.view_angles.x"), with a trailing "!" for a delta reset. Only populated
 	// when ParserConfig.UserCmdRecordFieldNames is set; nil otherwise.
