@@ -1,0 +1,231 @@
+From 98ef20a2e241fb741386bca0b27a09fc9969a4c4 Mon Sep 17 00:00:00 2001
+From: Nianmou <mateshaopu@163.com>
+Date: Sat, 19 Sep 2026 04:02:47 +0800
+Subject: [PATCH] feat(usercmd): keep command chains alive when a demo has no
+ full payload
+
+CS2 demos recorded since 2026-09 write a full payload for well under 0.1% of
+CMsgServerUserCmd entries (measured: 1,544 of 2,009,243), so failing closed on a
+missing baseline silently loses the entire first half of a match for 8 of 10
+players. ParserConfig.UserCmdSeedWithoutBaseline instead resumes the chain from an
+all-zero command; because the encoder only sends fields that changed, everything a
+delta writes is still the recorded value. Dispatched commands carry
+events.UserCmdSourceProvisional so callers can tell a field that was never written
+from one the player really left at zero.
+
+Also stop discarding a command when a repeated-field delta points past the end of a
+list that was never grown: the encoder only re-emits the grow operation when the
+element count changes, so this is normal on a freshly seeded chain and accounts for
+860 lost commands in the reference demo. Coverage goes from 83.1% to 100% of
+commands and 99.96% to 100% with seeding, verified bit-for-bit against the
+reference replay export on all reconstructed columns.
+---
+ pkg/demoinfocs/events/events.go    | 19 ++++++++
+ pkg/demoinfocs/parser.go           | 13 ++++++
+ pkg/demoinfocs/s2_commands.go      | 70 ++++++++++++++++++------------
+ pkg/demoinfocs/s2_usercmd_delta.go | 13 +++++-
+ 4 files changed, 85 insertions(+), 30 deletions(-)
+
+diff --git a/pkg/demoinfocs/events/events.go b/pkg/demoinfocs/events/events.go
+index aa02274..ea9819a 100644
+--- a/pkg/demoinfocs/events/events.go
++++ b/pkg/demoinfocs/events/events.go
+@@ -740,11 +740,29 @@ type PlayerButtonsStateUpdate struct {
+ 	ButtonsState uint64
+ }
+ 
++// UserCmdSource tells how trustworthy the fields of a reconstructed user command are.
++type UserCmdSource uint8
++
++const (
++	// UserCmdSourceExact means the command's chain is rooted in a full payload, so every
++	// field holds the value the demo recorded.
++	UserCmdSourceExact UserCmdSource = iota
++	// UserCmdSourceProvisional means the chain started from an all-zero command because no
++	// full payload arrived for this player slot yet (see ParserConfig.UserCmdSeedWithoutBaseline).
++	// Fields a delta actually wrote are still exact - the encoder only sends what changed - but
++	// fields never written since the seed keep their zero value, which means "unknown" rather
++	// than "the player sent 0".
++	UserCmdSourceProvisional
++)
++
+ // UserCmd signals that a complete CS2 user command was reconstructed from a
+ // CMsgServerUserCmd full payload or delta_data. Command contains the merged
+ // snapshot, including buttons, mouse movement, weapon selection, view angles,
+ // movement, subtick moves, and input history. Player may be nil when the demo
+ // does not yet have a player object for the command's slot.
++//
++// Source reports whether the chain is rooted in a real full payload or in an
++// all-zero seed, so callers can tell an untouched field from a genuine zero.
+ type UserCmd struct {
+ 	Player             *common.Player
+ 	PlayerSlot         int32
+@@ -752,6 +770,7 @@ type UserCmd struct {
+ 	ServerTickExecuted int32
+ 	ClientTick         int32
+ 	Command            *msg.CSGOUserCmdPB
++	Source             UserCmdSource
+ }
+ 
+ // ConVarsUpdated signals that ConVars/CVars have been updated.
+diff --git a/pkg/demoinfocs/parser.go b/pkg/demoinfocs/parser.go
+index d48a30f..8c2d140 100644
+--- a/pkg/demoinfocs/parser.go
++++ b/pkg/demoinfocs/parser.go
+@@ -581,6 +581,19 @@ type ParserConfig struct {
+ 	// UserCmdParsing controls CSVCMsg_UserCommands parsing. It defaults to
+ 	// UserCmdParsingButtonsOnly, including when ParserConfig is created as a zero value.
+ 	UserCmdParsing UserCmdParsingMode
++
++	// UserCmdSeedWithoutBaseline continues a player's command chain from an all-zero
++	// command when a delta arrives before any full payload, instead of dropping it.
++	//
++	// CS2 demos recorded since 2026-09 carry a full payload for well under 0.1% of user
++	// commands, so the default (fail closed until a baseline shows up) silently loses the
++	// entire first half of a match for most players. Deltas only carry fields that changed,
++	// so every value the reconstruction holds is the recorded one; only fields never written
++	// since the seed stay at their zero value. Those commands are dispatched with
++	// events.UserCmdSourceProvisional so callers can tell them apart.
++	//
++	// Has no effect unless UserCmdParsing is UserCmdParsingFull. Defaults to false.
++	UserCmdSeedWithoutBaseline bool
+ }
+ 
+ // DefaultParserConfig is the default Parser configuration used by NewParser().
+diff --git a/pkg/demoinfocs/s2_commands.go b/pkg/demoinfocs/s2_commands.go
+index 6e05a5e..bf28cae 100644
+--- a/pkg/demoinfocs/s2_commands.go
++++ b/pkg/demoinfocs/s2_commands.go
+@@ -474,6 +474,7 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
+ 		}
+ 
+ 		var next *msg.CSGOUserCmdPB
++		source := events.UserCmdSourceExact
+ 		if data := cmd.GetData(); len(data) > 0 {
+ 			// Full payloads replace the current command snapshot.
+ 			next = &msg.CSGOUserCmdPB{}
+@@ -490,35 +491,46 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
+ 			// number, then validates the command-number ring slot. A modulo
+ 			// collision is not a usable baseline.
+ 			if !state.hasCurrentCommand {
+-				p.msgDispatcher.Dispatch(events.ParserWarn{
+-					Message: fmt.Sprintf("user command %d has no baseline for player slot %d", cmd.GetCmdNumber(), slot),
+-					Type:    events.WarnTypeUserCommandBaselineMissing,
+-				})
+-
+-				continue
++				if !p.config.UserCmdSeedWithoutBaseline {
++					p.msgDispatcher.Dispatch(events.ParserWarn{
++						Message: fmt.Sprintf("user command %d has no baseline for player slot %d", cmd.GetCmdNumber(), slot),
++						Type:    events.WarnTypeUserCommandBaselineMissing,
++					})
++
++					continue
++				}
++
++				// No baseline yet: start from an empty command. The encoder only
++				// sends fields that changed, so everything a delta writes is the
++				// recorded value, while fields never written stay at zero.
++				next = &msg.CSGOUserCmdPB{}
++				source = events.UserCmdSourceProvisional
++			} else {
++				requestedBaseline := state.currentCommandNumber
++				if cmd.GetCmdNumber() < requestedBaseline {
++					p.msgDispatcher.Dispatch(events.ParserWarn{
++						Message: fmt.Sprintf("user command %d precedes its current baseline %d for player slot %d", cmd.GetCmdNumber(), requestedBaseline, slot),
++						Type:    events.WarnTypeUserCommandBaselineMismatch,
++					})
++
++					continue
++				}
++
++				baseline, found := state.ring.get(requestedBaseline)
++				if !found {
++					p.msgDispatcher.Dispatch(events.ParserWarn{
++						Message: fmt.Sprintf("user command %d has a baseline ring mismatch for player slot %d (requested %d)", cmd.GetCmdNumber(), slot, requestedBaseline),
++						Type:    events.WarnTypeUserCommandBaselineMismatch,
++					})
++
++					continue
++				}
++
++				next = proto.Clone(baseline).(*msg.CSGOUserCmdPB)
++				if state.provisional {
++					source = events.UserCmdSourceProvisional
++				}
+ 			}
+-
+-			requestedBaseline := state.currentCommandNumber
+-			if cmd.GetCmdNumber() < requestedBaseline {
+-				p.msgDispatcher.Dispatch(events.ParserWarn{
+-					Message: fmt.Sprintf("user command %d precedes its current baseline %d for player slot %d", cmd.GetCmdNumber(), requestedBaseline, slot),
+-					Type:    events.WarnTypeUserCommandBaselineMismatch,
+-				})
+-
+-				continue
+-			}
+-
+-			baseline, found := state.ring.get(requestedBaseline)
+-			if !found {
+-				p.msgDispatcher.Dispatch(events.ParserWarn{
+-					Message: fmt.Sprintf("user command %d has a baseline ring mismatch for player slot %d (requested %d)", cmd.GetCmdNumber(), slot, requestedBaseline),
+-					Type:    events.WarnTypeUserCommandBaselineMismatch,
+-				})
+-
+-				continue
+-			}
+-
+-			next = proto.Clone(baseline).(*msg.CSGOUserCmdPB)
+ 		} else {
+ 			continue
+ 		}
+@@ -540,6 +552,7 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
+ 		state.ring.insert(commandNumber, next)
+ 		state.currentCommandNumber = commandNumber
+ 		state.hasCurrentCommand = true
++		state.provisional = source == events.UserCmdSourceProvisional
+ 
+ 		// Player slots map to controller entities: slot N is entity N+1
+ 		// (getOrCreatePlayerFromControllerEntity relies on the same convention).
+@@ -551,6 +564,7 @@ func (p *parser) handleUserCommands(m *msg.CSVCMsg_UserCommands) {
+ 			ServerTickExecuted: cmd.GetServerTickExecuted(),
+ 			ClientTick:         cmd.GetClientTick(),
+ 			Command:            next,
++			Source:             source,
+ 		})
+ 
+ 		if player == nil {
+diff --git a/pkg/demoinfocs/s2_usercmd_delta.go b/pkg/demoinfocs/s2_usercmd_delta.go
+index 27b541e..2b196a1 100644
+--- a/pkg/demoinfocs/s2_usercmd_delta.go
++++ b/pkg/demoinfocs/s2_usercmd_delta.go
+@@ -70,6 +70,7 @@ type userCmdPlayerState struct {
+ 	ring                 userCmdRing
+ 	currentCommandNumber int32
+ 	hasCurrentCommand    bool
++	provisional          bool
+ }
+ 
+ // applyUserCmdDelta reconstructs a full user-command state by applying a delta
+@@ -209,8 +210,16 @@ func mergeUserCmdRepeated(parent protoreflect.Message, fd protoreflect.FieldDesc
+ 				return errors.Wrap(protowire.ParseError(valueLen), "failed to read repeated delta message")
+ 			}
+ 
+-			if index >= list.Len() {
+-				return errors.Errorf("repeated delta index %d is out of bounds for length %d", index, list.Len())
++			if index > userCmdRepeatedLimit {
++				return errors.Errorf("repeated delta index %d exceeds limit %d", index, userCmdRepeatedLimit)
++			}
++
++			// The encoder only re-emits the grow operation when the element count
++			// changes, so an index can legitimately point past the end of a list
++			// that was never grown yet. Extend it with empty elements, exactly
++			// like the reset marker above does.
++			for list.Len() <= index {
++				list.Append(list.NewElement())
+ 			}
+ 
+ 			if err := mergeUserCmdDelta(list.Get(index).Message(), value); err != nil {
+-- 
+2.53.0.windows.2
+
