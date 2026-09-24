@@ -47,8 +47,12 @@ func (p *parser) bindBomb() {
 				})
 			} else if bomb.Carrier != nil {
 				p.eventDispatcher.Dispatch(events.BombDropped{
-					Player:   bomb.Carrier,
-					EntityID: bomb.Carrier.EntityID,
+					Player: bomb.Carrier,
+					// EntityID 的语义是 **C4 的实体号**（原始 `bomb_dropped` 事件里的
+					// `entityid` 就是这个，见 game_events.go 的 bombDropped），
+					// 不是丢球人的玩家实体号。填错的话消费侧按上游 dedup 键
+					// （键里含 entity）折不掉这条与原始事件那一份。
+					EntityID: bombEntity.ID(),
 				})
 			}
 
