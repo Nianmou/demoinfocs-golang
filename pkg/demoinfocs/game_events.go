@@ -422,8 +422,9 @@ func (geh gameEventHandler) weaponFire(data map[string]*msg.CMsgSource1LegacyGam
 	wepType := common.MapEquipment(rawWeapon)
 
 	geh.dispatch(events.WeaponFire{
-		Shooter: shooter,
-		Weapon:  getPlayerWeapon(shooter, wepType, rawWeapon, geh.parser.nextUniqueID()),
+		Shooter:      shooter,
+		Weapon:       getPlayerWeapon(shooter, wepType, rawWeapon, geh.parser.nextUniqueID()),
+		WeaponString: rawWeapon,
 	})
 }
 
@@ -457,9 +458,12 @@ func (geh gameEventHandler) playerDeath(data map[string]*msg.CMsgSource1LegacyGa
 		Victim:            geh.playerByUserID32(data["userid"].GetValShort()),
 		Killer:            killer,
 		Assister:          geh.playerByUserID32(data["assister"].GetValShort()),
+		HealthDamage:      int(data["dmg_health"].GetValShort()),
+		HasHealthDamage:   data["dmg_health"] != nil,
 		IsHeadshot:        data["headshot"].GetValBool(),
 		PenetratedObjects: int(data["penetrated"].GetValShort()),
 		Weapon:            geh.getEquipmentInstance(killer, wepType, rawWeapon),
+		WeaponString:      rawWeapon,
 		AssistedFlash:     data["assistedflash"].GetValBool(),
 		AttackerBlind:     data["attackerblind"].GetValBool(),
 		NoScope:           data["noscope"].GetValBool(),

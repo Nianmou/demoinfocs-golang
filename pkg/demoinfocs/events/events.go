@@ -160,10 +160,19 @@ type PlayerSound struct {
 
 // Kill signals that a player has been killed.
 type Kill struct {
-	Weapon            *common.Equipment
-	Victim            *common.Player // May be nil if the demo is partially corrupt (player is 'unconnected', see #156 and #172).
-	Killer            *common.Player // May be nil for world damage (EqWorld) or if the demo is partially corrupt (player is 'unconnected', see #156 and #172).
-	Assister          *common.Player
+	Weapon *common.Equipment
+	// WeaponString is the raw "weapon" key of the player_death game event
+	// (e.g. "m4a1", "m4a1_silencer"). DemoTracer's converter resolves the weapon
+	// definition index from this string, not from the equipment entity.
+	WeaponString string
+	Victim       *common.Player // May be nil if the demo is partially corrupt (player is 'unconnected', see #156 and #172).
+	Killer       *common.Player // May be nil for world damage (EqWorld) or if the demo is partially corrupt (player is 'unconnected', see #156 and #172).
+	Assister     *common.Player
+	// HealthDamage is the player_death event's "dmg_health" key: the damage the fatal
+	// hit dealt. DemoTracer's converter writes it into its death record, so it has to be
+	// readable here. HasHealthDamage tells "key absent" apart from "key present, 0".
+	HealthDamage      int
+	HasHealthDamage   bool
 	PenetratedObjects int
 	IsHeadshot        bool
 	AssistedFlash     bool
@@ -187,6 +196,8 @@ type BotTakenOver struct {
 type WeaponFire struct {
 	Shooter *common.Player // May be nil if the demo is partially corrupt (player is 'unconnected', see #156 and #172).
 	Weapon  *common.Equipment
+	// WeaponString is the raw "weapon" key of the weapon_fire game event.
+	WeaponString string
 }
 
 // WeaponReload signals that a player started to reload his weapon.
